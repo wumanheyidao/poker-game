@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>10 人在线德州扑克</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            margin: 0; 
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); 
+            font-family: 'Arial', sans-serif; 
+            overflow: hidden;
+            min-height: 100vh;
+        }
+        
+        /* 游戏桌 */
+        .poker-table {
+            width: 800px; 
+            height: 400px;
+            background: radial-gradient(ellipse at center, #27ae60 0%, #1e8449 100%);
+            border: 20px solid #5d4037;
+            border-radius: 200px;
+            position: absolute;
+            top: 50%; 
+            left: 50%;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 50px rgba(0,0,0,0.5), inset 0 0 100px rgba(0,0,0,0.3);
+        }
+
+        /* 公共牌区域 */
+        .community-area {
+            position: absolute;
+            top: 50%; 
+            left: 50%;
+            transform: translate(-50%, -50%);
+            display: flex; 
+            gap: 10px;
+            min-height: 70px;
+            min-width: 250px;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* 底池信息 */
+        .pot-info {
+            position: absolute;
+            top: 35%; 
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #f1c40f; 
+            font-weight: bold; 
+            font-size: 20px;
+            background: rgba(0,0,0,0.5); 
+            padding: 8px 25px; 
+            border-radius: 25px;
+            border: 2px solid #f1c40f;
+        }
+
+        /* 游戏阶段显示 */
+        .stage-info {
+            position: absolute;
+            top: 25%; 
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white; 
+            font-size: 16px;
+            background: rgba(0,0,0,0.3); 
+            padding: 5px 15px; 
+            border-radius: 15px;
+        }
+
+        /* 玩家座位 */
+        .seat {
+            position: absolute;
+            width: 110px; 
+            height: 110px;
+            background: rgba(0,0,0,0.7);
+            border-radius: 50%;
+            color: white;
+            display: flex; 
+            flex-direction: column;
+            align-items: center; 
+            justify-content: center;
+            font-size: 12px;
+            border: 3px solid #444;
+            transition: all 0.3s;
+            cursor: default;
+        }
+        
+        .seat.active-turn { 
+            border-color: #f1c40f; 
+            box-shadow: 0 0 20px #f1c40f;
+            transform: scale(1.05);
+        }
+        
+        .seat.folded { opacity: 0.4; }
+        .seat .chips { color: #f1c40f; font-weight: bold; font-size: 14px; }
+        .seat .name { margin-bottom: 5px; font-weight: bold; }
+        .seat .badges { font-size: 10px; color: #aaa; }
+
+        /* 10 人座位位置 (椭圆形分布) */
+        .seat-0 { bottom: -70px; left: 50%; transform: translateX(-50%); }
+        .seat-1 { bottom: 10px; left: -90px; }
+        .seat-2 { top: 80px; left: -110px; }
+        .seat-3 { top: 160px; left: -70px; }
+        .seat-4 { top: 200px; left: 80px; }
+        .seat-5 { top: 200px; right: 80px; }
+        .seat-6 { top: 160px; right: -70px; }
+        .seat-7 { top: 80px; right: -110px; }
+        .seat-8 { bottom: 10px; right: -90px; }
+        .seat-9 { bottom: -70px; left: 50%; transform: translateX(-50%); display: none; }
+
+        /* 扑克牌样式 */
+        .card {
+            width: 45px; 
+            height: 65px;
+            background: white; 
+            border-radius: 6px;
+            display: flex; 
+            align-items: center; 
+            justify-content: center;
+            font-size: 22px; 
+            font-weight: bold;
+            box-shadow: 2px 2px 8px rgba(0,0,0,0.4);
+            user-select: none;
+        }
+        .card.red { color: #e74c3c; }
+        .card.black { color: #2c3e50; }
+        .card.back {
+            background: linear-gradient(135deg, #34495e 0%, #2c3e50 100%);
+            background-image: repeating-linear-gradient(45deg, #2c3e50 0, #2c3e50 3px, #34495e 3px, #34495e 6px);
+            color: transparent;
+            border: 2px solid #fff;
+        }
+        .hand-cards { 
+            display: flex; 
+            gap: 5px; 
+            margin-top: 5px; 
+        }
+
+        /* 控制栏 */
+        .controls {
+            position: absolute; 
+            bottom: 30px; 
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex; 
+            gap: 15px;
+            z-index: 100;
+        }
+        
+        button {
+            padding: 12px 30px; 
+            font-size: 16px; 
+            cursor: pointer;
+            border: none; 
+            border-radius: 8px; 
+            color: white;
+            font-weight: bold;
+            transition: all 0.2s;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        
+        button:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 6px 10px rgba(0,0,0,0.4); }
+        button:active:not(:disabled) { transform: translateY(0); }
+        button:disabled { 
+            background: #555 !important; 
+            cursor: not-allowed; 
+            opacity: 0.6;
+        }
+        
+        button.fold { background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%); }
+        button.check { background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%); }
+        button.raise { background: linear-gradient(135deg, #e67e22 0%, #d35400 100%); }
+
+        /* 登录遮罩 */
+        #login-modal {
+            position: fixed; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%;
+            background: rgba(0,0,0,0.85);
+            display: flex; 
+            justify-content: center; 
+            align-items: center;
+            z-index: 1000;
+        }
+        
+        .modal-content {
+            background: linear-gradient(135deg, #2c3e50 0%, #1a252f 100%); 
+            padding: 40px; 
+            border-radius: 15px; 
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            border: 2px solid #34495e;
+        }
+        
+        .modal-content h2 { 
+            color: #f1c40f; 
+            margin-top: 0;
+            font-size: 28px;
+        }
+        
+        input { 
+            padding: 12px 20px; 
+            font-size: 16px; 
+            margin: 10px 0; 
+            border-radius: 8px;
+            border: 2px solid #34495e;
+            background: #1a252f;
+            color: white;
+            width: 250px;
+            text-align: center;
+        }
+        
+        input:focus { 
+            outline: none; 
+            border-color: #f1c40f;
+        }
+        
+        .modal-content button {
+            background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%);
+            margin-top: 15px;
+            width: 250px;
+        }
+
+        /* 消息提示 */
+        #message-area {
+            position: absolute; 
+            top: 30px; 
+            left: 50%; 
+            transform: translateX(-50%);
+            color: #f1c40f; 
+            font-size: 26px; 
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            z-index: 200;
+            animation: pulse 0.5s ease-in-out;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { transform: translateX(-50%) scale(1); }
+            50% { transform: translateX(-50%) scale(1.1); }
+        }
+
+        /* 房间信息显示 */
+        .room-info {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: #aaa;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <!-- 登录界面 -->
+    <div id="login-modal">
+        <div class="modal-content">
+            <h2>🃏 德州扑克</h2>
+            <p style="color: #aaa; margin-bottom: 20px;">10 人在线对战</p>
+            <input type="text" id="room-id" placeholder="房间号 (和朋友填一样)" value="friend888">
+            <br>
+            <input type="text" id="username" placeholder="你的昵称" value="Player">
+            <br>
+            <button onclick="joinGame()">🎮 加入游戏</button>
+        </div>
+    </div>
+
+    <!-- 消息提示 -->
+    <div id="message-area"></div>
+
+    <!-- 房间信息 -->
+    <div class="room-info">房间：<span id="room-display">-</span></div>
+
+    <!-- 游戏桌 -->
+    <div class="poker-table">
+        <div class="stage-info">阶段：<span id="stage-display">等待中</span></div>
+        <div class="pot-info">💰 底池：$<span id="pot-amount">0</span></div>
+        <div class="community-area" id="community-cards"></div>
+        <div id="seats-container"></div>
+    </div>
+
+    <!-- 操作按钮 -->
+    <div class="controls">
+        <button class="fold" id="btn-fold" onclick="sendAction('fold')" disabled>🚫 弃牌</button>
+        <button class="check" id="btn-check" onclick="sendAction('check')" disabled>✓ 过牌/跟注</button>
+        <button class="raise" id="btn-raise" onclick="sendAction('raise')" disabled>📈 加注</button>
+    </div>
+
+    <script>
+        let socket = null;
+        let myId = null;
+        let gameState = null;
+        let currentRoom = '';
+
+        const suitMap = { 's': '♠', 'h': '♥', 'c': '♣', 'd': '♦' };
+        const colorMap = { 's': 'black', 'h': 'red', 'c': 'black', 'd': 'red' };
+        const stageMap = {
+            'waiting': '等待玩家',
+            'preflop': '发底牌',
+            'flop': '翻牌 (3 张)',
+            'turn': '转牌 (4 张)',
+            'river': '河牌 (5 张)',
+            'showdown': '摊牌比牌'
+        };
+
+        function joinGame() {
+            const name = document.getElementById('username').value.trim();
+            const roomId = document.getElementById('room-id').value.trim() || 'room1';
+            
+            if (!name) return alert('请输入昵称！');
+            
+            currentRoom = roomId;
+            document.getElementById('room-display').innerText = roomId;
+            document.getElementById('login-modal').style.display = 'none';
+            
+            // 连接服务器
+            socket = io(window.location.origin, {
+                query: { roomId: roomId }
+            });
+            
+            bindSocketEvents(socket);
+            socket.emit('join_game', name);
+        }
+
+        function bindSocketEvents(socket) {
+            socket.on('connect', () => {
+                myId = socket.id;
+                console.log('已连接到服务器，ID:', myId);
+            });
+
+            socket.on('game_state', (state) => {
+                gameState = state;
+                renderTable(state);
+            });
+
+            socket.on('your_turn', () => {
+                enableControls(true);
+                showMessage('🎯 轮到你了！');
+            });
+
+            socket.on('game_result', (data) => {
+                showMessage('🏆 ' + data.msg + (data.handName ? ` (${data.handName})` : ''));
+                enableControls(false);
+            });
+            
+            window.gameSocket = socket;
+        }
+
+        function sendAction(action) {
+            if(window.gameSocket) {
+                window.gameSocket.emit('action', action);
+                enableControls(false);
+            }
+        }
+
+        function enableControls(enable) {
+            document.getElementById('btn-fold').disabled = !enable;
+            document.getElementById('btn-check').disabled = !enable;
+            document.getElementById('btn-raise').disabled = !enable;
+        }
+
+        function showMessage(msg) {
+            const el = document.getElementById('message-area');
+            el.innerText = msg;
+            setTimeout(() => el.innerText = '', 4000);
+        }
+
+        function renderTable(state) {
+            document.getElementById('pot-amount').innerText = state.pot;
+            document.getElementById('stage-display').innerText = stageMap[state.stage] || state.stage;
+            renderCommunityCards(state.communityCards);
+            renderSeats(state.players, state.currentTurnIdx, state.dealerIdx);
+        }
+
+        function renderCommunityCards(cards) {
+            const container = document.getElementById('community-cards');
+            container.innerHTML = '';
+            cards.forEach(c => {
+                container.appendChild(createCardEl(c));
+            });
+        }
+
+        function renderSeats(players, turnIdx, dealerIdx) {
+            const container = document.getElementById('seats-container');
+            container.innerHTML = '';
+            
+            players.forEach((p, index) => {
+                const seat = document.createElement('div');
+                seat.className = `seat seat-${index % 10}`;
+                
+                if (index === turnIdx) seat.classList.add('active-turn');
+                if (p.status === 'folded') seat.classList.add('folded');
+                if (p.status === 'sitout') seat.style.opacity = '0.3';
+
+                let badges = '';
+                if (p.isDealer) badges += '📍庄家 ';
+                if (p.isSmallBlind) badges += 'SB ';
+                if (p.isBigBlind) badges += 'BB ';
+
+                let handHtml = '<div class="hand-cards">';
+                if (p.status !== 'sitout') {
+                    const showHand = (p.id === myId || gameState.stage === 'showdown');
+                    if (showHand && p.hand && p.hand.length > 0) {
+                        p.hand.forEach(c => handHtml += createCardEl(c).outerHTML);
+                    } else if (p.status === 'active') {
+                        handHtml += `<div class="card back"></div><div class="card back"></div>`;
+                    }
+                }
+                handHtml += '</div>';
+
+                seat.innerHTML = `
+                    <div class="name">${p.name}</div>
+                    <div class="badges">${badges}</div>
+                    <div class="chips">💵 $${p.chips}</div>
+                    ${handHtml}
+                `;
+                container.appendChild(seat);
+            });
+        }
+
+        function createCardEl(c) {
+            const div = document.createElement('div');
+            div.className = `card ${colorMap[c.suit]}`;
+            div.innerText = `${c.value}${suitMap[c.suit]}`;
+            return div;
+        }
+    </script>
+</body>
+</html>
