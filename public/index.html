@@ -488,384 +488,353 @@
         <button class="raise" id="btn-raise" onclick="sendAction('raise')" disabled>📈 加注</button>
     </div>
 
-    <script>
+  <script>
+    let socket = null;
+    let myId = null;
+    let gameState = null;
+    let currentRoom = '';
+    let soundEnabled = true;
+    let audioContext = null;
+    let isHost = false;
 
-        let isHost = false;
+    const suitMap = { 's': '♠', 'h': '♥', 'c': '♣', 'd': '♦' };
+    const colorMap = { 's': 'black', 'h': 'red', 'c': 'black', 'd': 'red' };
+    const stageMap = {
+        'waiting': '等待玩家',
+        'preflop': '发底牌',
+        'flop': '翻牌 (3 张)',
+        'turn': '转牌 (4 张)',
+        'river': '河牌 (5 张)',
+        'showdown': '摊牌比牌'
+    };
 
-// ⭐ 接收被踢通知
-socket.on('kicked', (data) => {
-    document.getElementById('login-modal').style.display = 'none';
-    const kickedModal = document.createElement('div');
-    kickedModal.className = 'kicked-modal';
-    kickedModal.style.display = 'flex';
-    kickedModal.innerHTML = `
-        <div class="kicked-content">
-            <h2>🚫 你被踢出房间</h2>
-            <p>${data.kicker ? `房主 ${data.kicker} 将你踢出` : '你被房主踢出房间'}</p>
-            <p style="color: #aaa; font-size: 14px;">${data.reason || ''}</p>
-            <button onclick="location.reload()" style="padding: 10px 30px; font-size: 16px; background: #27ae60; color: white; border: none; border-radius: 8px; cursor: pointer;">返回大厅</button>
-        </div>
-    `;
-    document.body.appendChild(kickedModal);
-    socket.disconnect();
-});
-
-// ⭐ 接收踢人结果
-socket.on('kick_result', (result) => {
-    showMessage(result.success ? '✅ ' + result.message : '❌ ' + result.message);
-    if (result.success) {
-        renderKickList(); // 刷新踢人列表
-    }
-});
-
-// ⭐ 渲染踢人列表
-function renderKickList() {
-    if (!isHost || !gameState) return;
-    
-    const kickList = document.getElementById('kick-list');
-    kickList.innerHTML = '';
-    
-    gameState.players.forEach(p => {
-        if (p.id !== myId) { // 不能踢自己
-            const item = document.createElement('div');
-            item.className = 'kick-item';
-            item.innerHTML = `
-                <span class="player-name">${p.name} ${p.isHost ? '👑' : ''}</span>
-                <button class="kick-btn" onclick="kickPlayer('${p.id}', '${p.name}')">踢出</button>
-            `;
-            kickList.appendChild(item);
+    // ⭐ 音效系统
+    function initAudio() {
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
         }
-    });
-}
+    }
 
-// ⭐ 踢人函数
-function kickPlayer(targetId, targetName) {
-    if (!confirm(`确定要踢出玩家 "${targetName}" 吗？`)) return;
-    
-    socket.emit('kick_player', {
-        targetId: targetId,
-        roomId: currentRoom
-    });
-}
-
-// ⭐ 修改 bindSocketEvents，检测房主身份
-function bindSocketEvents(socket) {
-    socket.on('connect', () => {
-        myId = socket.id;
-        console.log('已连接到服务器，ID:', myId);
-    });
-
-    socket.on('game_state', (state) => {
-        const prevStage = gameState ? gameState.stage : null;
-        gameState = state;
-        renderTable(state, prevStage);
+    function playSound(type) {
+        if (!soundEnabled || !audioContext) return;
         
-        // ⭐ 检测房主身份
-        const myPlayer = state.players.find(p => p.id === myId);
-        if (myPlayer && myPlayer.isHost && !isHost) {
-            isHost = true;
-            document.getElementById('host-controls').style.display = 'block';
-            renderKickList();
-            showMessage('👑 你是房主！');
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+        
+        switch(type) {
+            case 'deal':
+                oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+                oscillator.frequency.exponentialRampToValueAtTime(400, audioContext.currentTime + 0.1);
+                gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.1);
+                break;
+                
+            case 'chip':
+                oscillator.frequency.setValueAtTime(1200, audioContext.currentTime);
+                oscillator.frequency.exponentialRampToValueAtTime(600, audioContext.currentTime + 0.08);
+                gainNode.gain.setValueAtTime(0.2, audioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.08);
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.08);
+                break;
+                
+            case 'win':
+                oscillator.frequency.setValueAtTime(523, audioContext.currentTime);
+                oscillator.frequency.setValueAtTime(659, audioContext.currentTime + 0.1);
+                oscillator.frequency.setValueAtTime(784, audioContext.currentTime + 0.2);
+                oscillator.frequency.setValueAtTime(1047, audioContext.currentTime + 0.3);
+                gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.5);
+                break;
+                
+            case 'turn':
+                oscillator.frequency.setValueAtTime(880, audioContext.currentTime);
+                oscillator.frequency.exponentialRampToValueAtTime(440, audioContext.currentTime + 0.15);
+                gainNode.gain.setValueAtTime(0.25, audioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.15);
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.15);
+                break;
+                
+            case 'fold':
+                oscillator.frequency.setValueAtTime(300, audioContext.currentTime);
+                oscillator.frequency.exponentialRampToValueAtTime(150, audioContext.currentTime + 0.2);
+                gainNode.gain.setValueAtTime(0.2, audioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.2);
+                break;
         }
-    });
-
-    socket.on('your_turn', () => {
-        enableControls(true);
-        showMessage('🎯 轮到你了！');
-        playSound('turn');
-    });
-
-    socket.on('game_result', (data) => {
-        showMessage('🏆 ' + data.msg + (data.handName ? ` (${data.handName})` : ''));
-        playSound('win');
-        enableControls(false);
-    });
-    
-    window.gameSocket = socket;
-}
-
-// ⭐ 玩家离开时刷新踢人列表
-socket.on('player_left', () => {
-    if (isHost) {
-        renderKickList();
     }
-});
 
-        let socket = null;
-        let myId = null;
-        let gameState = null;
-        let currentRoom = '';
-        let soundEnabled = true;
-        let audioContext = null;
-
-        const suitMap = { 's': '♠', 'h': '♥', 'c': '♣', 'd': '♦' };
-        const colorMap = { 's': 'black', 'h': 'red', 'c': 'black', 'd': 'red' };
-        const stageMap = {
-            'waiting': '等待玩家',
-            'preflop': '发底牌',
-            'flop': '翻牌 (3 张)',
-            'turn': '转牌 (4 张)',
-            'river': '河牌 (5 张)',
-            'showdown': '摊牌比牌'
-        };
-
-        // ⭐ 音效系统
-        function initAudio() {
-            if (!audioContext) {
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            }
-        }
-
-        function playSound(type) {
-            if (!soundEnabled || !audioContext) return;
-            
-            const oscillator = audioContext.createOscillator();
-            const gainNode = audioContext.createGain();
-            
-            oscillator.connect(gainNode);
-            gainNode.connect(audioContext.destination);
-            
-            switch(type) {
-                case 'deal': // 发牌音效
-                    oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
-                    oscillator.frequency.exponentialRampToValueAtTime(400, audioContext.currentTime + 0.1);
-                    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
-                    oscillator.start(audioContext.currentTime);
-                    oscillator.stop(audioContext.currentTime + 0.1);
-                    break;
-                    
-                case 'chip': // 筹码音效
-                    oscillator.frequency.setValueAtTime(1200, audioContext.currentTime);
-                    oscillator.frequency.exponentialRampToValueAtTime(600, audioContext.currentTime + 0.08);
-                    gainNode.gain.setValueAtTime(0.2, audioContext.currentTime);
-                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.08);
-                    oscillator.start(audioContext.currentTime);
-                    oscillator.stop(audioContext.currentTime + 0.08);
-                    break;
-                    
-                case 'win': // 获胜音效
-                    oscillator.frequency.setValueAtTime(523, audioContext.currentTime);
-                    oscillator.frequency.setValueAtTime(659, audioContext.currentTime + 0.1);
-                    oscillator.frequency.setValueAtTime(784, audioContext.currentTime + 0.2);
-                    oscillator.frequency.setValueAtTime(1047, audioContext.currentTime + 0.3);
-                    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
-                    oscillator.start(audioContext.currentTime);
-                    oscillator.stop(audioContext.currentTime + 0.5);
-                    break;
-                    
-                case 'turn': // 轮到你
-                    oscillator.frequency.setValueAtTime(880, audioContext.currentTime);
-                    oscillator.frequency.exponentialRampToValueAtTime(440, audioContext.currentTime + 0.15);
-                    gainNode.gain.setValueAtTime(0.25, audioContext.currentTime);
-                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.15);
-                    oscillator.start(audioContext.currentTime);
-                    oscillator.stop(audioContext.currentTime + 0.15);
-                    break;
-                    
-                case 'fold': // 弃牌音效
-                    oscillator.frequency.setValueAtTime(300, audioContext.currentTime);
-                    oscillator.frequency.exponentialRampToValueAtTime(150, audioContext.currentTime + 0.2);
-                    gainNode.gain.setValueAtTime(0.2, audioContext.currentTime);
-                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
-                    oscillator.start(audioContext.currentTime);
-                    oscillator.stop(audioContext.currentTime + 0.2);
-                    break;
-            }
-        }
-
-        function toggleSound() {
-            soundEnabled = !soundEnabled;
-            const btn = document.getElementById('sound-toggle');
-            if (soundEnabled) {
-                btn.innerText = '🔊 音效开';
-                btn.classList.remove('muted');
-                initAudio();
-            } else {
-                btn.innerText = '🔇 音效关';
-                btn.classList.add('muted');
-            }
-        }
-
-        function joinGame() {
-            const name = document.getElementById('username').value.trim();
-            const roomId = document.getElementById('room-id').value.trim() || 'room1';
-            
-            if (!name) return alert('请输入昵称！');
-            
-            // ⭐ 初始化音频
+    function toggleSound() {
+        soundEnabled = !soundEnabled;
+        const btn = document.getElementById('sound-toggle');
+        if (soundEnabled) {
+            btn.innerText = '🔊 音效开';
+            btn.classList.remove('muted');
             initAudio();
+        } else {
+            btn.innerText = '🔇 音效关';
+            btn.classList.add('muted');
+        }
+    }
+
+    // ⭐ 修复：正确的 joinGame 函数
+    function joinGame() {
+        const name = document.getElementById('username').value.trim();
+        const roomId = document.getElementById('room-id').value.trim() || 'room1';
+        
+        if (!name) return alert('请输入昵称！');
+        
+        // ⭐ 先初始化音频
+        initAudio();
+        
+        currentRoom = roomId;
+        document.getElementById('room-display').innerText = roomId;
+        document.getElementById('login-modal').style.display = 'none';
+        
+        // ⭐ 再创建 socket 连接
+        socket = io(window.location.origin, {
+            query: { roomId: roomId }
+        });
+        
+        // ⭐ 然后绑定事件
+        bindSocketEvents(socket);
+        
+        // ⭐ 最后加入游戏
+        socket.emit('join_game', name);
+    }
+
+    function bindSocketEvents(socket) {
+        socket.on('connect', () => {
+            myId = socket.id;
+            console.log('已连接到服务器，ID:', myId);
+        });
+
+        socket.on('game_state', (state) => {
+            const prevStage = gameState ? gameState.stage : null;
+            gameState = state;
+            renderTable(state, prevStage);
             
-            currentRoom = roomId;
-            document.getElementById('room-display').innerText = roomId;
+            // ⭐ 检测房主身份
+            const myPlayer = state.players.find(p => p.id === myId);
+            if (myPlayer && myPlayer.isHost && !isHost) {
+                isHost = true;
+                document.getElementById('host-controls').style.display = 'block';
+                renderKickList();
+                showMessage('👑 你是房主！');
+            }
+        });
+
+        socket.on('your_turn', () => {
+            enableControls(true);
+            showMessage('🎯 轮到你了！');
+            playSound('turn');
+        });
+
+        socket.on('game_result', (data) => {
+            showMessage('🏆 ' + data.msg + (data.handName ? ` (${data.handName})` : ''));
+            playSound('win');
+            enableControls(false);
+        });
+        
+        // ⭐ 被踢通知
+        socket.on('kicked', (data) => {
             document.getElementById('login-modal').style.display = 'none';
-            
-            socket = io(window.location.origin, {
-                query: { roomId: roomId }
-            });
-            
-            bindSocketEvents(socket);
-            socket.emit('join_game', name);
-        }
-
-        function bindSocketEvents(socket) {
-            socket.on('connect', () => {
-                myId = socket.id;
-                console.log('已连接到服务器，ID:', myId);
-            });
-
-            socket.on('game_state', (state) => {
-                const prevStage = gameState ? gameState.stage : null;
-                gameState = state;
-                renderTable(state, prevStage);
-            });
-
-            socket.on('your_turn', () => {
-                enableControls(true);
-                showMessage('🎯 轮到你了！');
-                playSound('turn'); // ⭐ 播放提示音
-            });
-
-            socket.on('game_result', (data) => {
-                showMessage('🏆 ' + data.msg + (data.handName ? ` (${data.handName})` : ''));
-                playSound('win'); // ⭐ 播放获胜音
-                enableControls(false);
-            });
-            
-            window.gameSocket = socket;
-        }
-
-        function sendAction(action) {
-            if(window.gameSocket) {
-                window.gameSocket.emit('action', action);
-                enableControls(false);
-                
-                // ⭐ 播放操作音效
-                if (action === 'fold') playSound('fold');
-                else playSound('chip');
+            document.getElementById('host-controls').style.display = 'none';
+            const kickedModal = document.createElement('div');
+            kickedModal.className = 'kicked-modal';
+            kickedModal.style.display = 'flex';
+            kickedModal.innerHTML = `
+                <div class="kicked-content">
+                    <h2>🚫 你被踢出房间</h2>
+                    <p>${data.kicker ? `房主 ${data.kicker} 将你踢出` : '你被房主踢出房间'}</p>
+                    <p style="color: #aaa; font-size: 14px;">${data.reason || ''}</p>
+                    <button onclick="location.reload()" style="padding: 10px 30px; font-size: 16px; background: #27ae60; color: white; border: none; border-radius: 8px; cursor: pointer;">返回大厅</button>
+                </div>
+            `;
+            document.body.appendChild(kickedModal);
+            socket.disconnect();
+        });
+        
+        // ⭐ 踢人结果
+        socket.on('kick_result', (result) => {
+            showMessage(result.success ? '✅ ' + result.message : '❌ ' + result.message);
+            if (result.success) {
+                renderKickList();
             }
-        }
+        });
+        
+        window.gameSocket = socket;
+    }
 
-        function enableControls(enable) {
-            const btnFold = document.getElementById('btn-fold');
-            const btnCheck = document.getElementById('btn-check');
-            const btnRaise = document.getElementById('btn-raise');
-            
-            btnFold.disabled = !enable;
-            btnCheck.disabled = !enable;
-            btnRaise.disabled = !enable;
-            
-            // ⭐ 按钮高亮
-            if (enable) {
-                btnCheck.classList.add('active-action');
-                setTimeout(() => btnCheck.classList.remove('active-action'), 2000);
+    function sendAction(action) {
+        if(window.gameSocket) {
+            window.gameSocket.emit('action', action);
+            enableControls(false);
+            if (action === 'fold') playSound('fold');
+            else playSound('chip');
+        }
+    }
+
+    function enableControls(enable) {
+        const btnFold = document.getElementById('btn-fold');
+        const btnCheck = document.getElementById('btn-check');
+        const btnRaise = document.getElementById('btn-raise');
+        
+        btnFold.disabled = !enable;
+        btnCheck.disabled = !enable;
+        btnRaise.disabled = !enable;
+        
+        if (enable) {
+            btnCheck.classList.add('active-action');
+            setTimeout(() => btnCheck.classList.remove('active-action'), 2000);
+        }
+    }
+
+    function showMessage(msg) {
+        const el = document.getElementById('message-area');
+        el.innerText = msg;
+        setTimeout(() => el.innerText = '', 4000);
+    }
+
+    function renderTable(state, prevStage) {
+        document.getElementById('pot-amount').innerText = state.pot;
+        document.getElementById('stage-display').innerText = stageMap[state.stage] || state.stage;
+        renderCommunityCards(state.communityCards, prevStage !== state.stage);
+        renderSeats(state.players, state.currentTurnIdx, state.dealerIdx);
+        renderActionArrow(state.players, state.currentTurnIdx);
+    }
+
+    function renderCommunityCards(cards, animate) {
+        const container = document.getElementById('community-cards');
+        container.innerHTML = '';
+        cards.forEach((c, index) => {
+            const cardEl = createCardEl(c);
+            if (animate) {
+                cardEl.style.animationDelay = `${index * 0.1}s`;
             }
+            container.appendChild(cardEl);
+        });
+        
+        if (animate && cards.length > 0) {
+            playSound('deal');
         }
+    }
 
-        function showMessage(msg) {
-            const el = document.getElementById('message-area');
-            el.innerText = msg;
-            setTimeout(() => el.innerText = '', 4000);
-        }
+    function renderSeats(players, turnIdx, dealerIdx) {
+        const container = document.getElementById('seats-container');
+        container.innerHTML = '';
+        
+        players.forEach((p, index) => {
+            const seat = document.createElement('div');
+            seat.className = `seat seat-${index % 10}`;
+            
+            if (index === turnIdx) seat.classList.add('active-turn');
+            if (p.id === myId && index === turnIdx) seat.classList.add('is-me');
+            if (p.status === 'folded') seat.classList.add('folded');
+            if (p.status === 'sitout') seat.style.opacity = '0.3';
+            if (p.status === 'disconnected') {
+                seat.style.border = '3px dashed #666';
+            }
 
-        function renderTable(state, prevStage) {
-            document.getElementById('pot-amount').innerText = state.pot;
-            document.getElementById('stage-display').innerText = stageMap[state.stage] || state.stage;
-            renderCommunityCards(state.communityCards, prevStage !== state.stage);
-            renderSeats(state.players, state.currentTurnIdx, state.dealerIdx);
-            renderActionArrow(state.players, state.currentTurnIdx);
-        }
+            let badges = '';
+            if (p.isDealer) badges += '📍庄家 ';
+            if (p.isSmallBlind) badges += 'SB ';
+            if (p.isBigBlind) badges += 'BB ';
+            if (p.isHost) badges += '👑房主 ';
 
-        function renderCommunityCards(cards, animate) {
-            const container = document.getElementById('community-cards');
-            container.innerHTML = '';
-            cards.forEach((c, index) => {
-                const cardEl = createCardEl(c);
-                if (animate) {
-                    cardEl.style.animationDelay = `${index * 0.1}s`;
+            let handHtml = '<div class="hand-cards">';
+            if (p.status !== 'sitout') {
+                const showHand = (p.id === myId || gameState.stage === 'showdown');
+                if (showHand && p.hand && p.hand.length > 0) {
+                    p.hand.forEach(c => handHtml += createCardEl(c).outerHTML);
+                } else if (p.status === 'active') {
+                    handHtml += `<div class="card back"></div><div class="card back"></div>`;
                 }
-                container.appendChild(cardEl);
-            });
-            
-            if (animate && cards.length > 0) {
-                playSound('deal'); // ⭐ 发公共牌音效
             }
+            handHtml += '</div>';
+
+            seat.innerHTML = `
+                <div class="name">${p.name}</div>
+                <div class="badges">${badges}</div>
+                <div class="chips">💵 $${p.chips}</div>
+                ${handHtml}
+            `;
+            container.appendChild(seat);
+        });
+    }
+
+    function renderActionArrow(players, turnIdx) {
+        const arrow = document.getElementById('action-arrow');
+        if (turnIdx === undefined || turnIdx === null || !players[turnIdx]) {
+            arrow.style.display = 'none';
+            return;
         }
+        
+        arrow.style.display = 'block';
+        
+        const positions = {
+            0: { bottom: '20px', left: '50%', transform: 'translateX(-50%) rotate(180deg)' },
+            1: { bottom: '120px', left: '100px', transform: 'rotate(135deg)' },
+            2: { top: '100px', left: '120px', transform: 'rotate(90deg)' },
+            3: { top: '50px', left: '80px', transform: 'rotate(45deg)' },
+            4: { top: '30px', left: '50%', transform: 'translateX(-50%)' },
+            5: { top: '30px', right: '50%', transform: 'translateX(50%)' },
+            6: { top: '50px', right: '80px', transform: 'rotate(-45deg)' },
+            7: { top: '100px', right: '120px', transform: 'rotate(-90deg)' },
+            8: { bottom: '120px', right: '100px', transform: 'rotate(-135deg)' }
+        };
+        
+        const pos = positions[turnIdx % 9] || positions[0];
+        Object.assign(arrow.style, pos);
+    }
 
-        function renderSeats(players, turnIdx, dealerIdx) {
-            const container = document.getElementById('seats-container');
-            container.innerHTML = '';
-            
-            players.forEach((p, index) => {
-                const seat = document.createElement('div');
-                seat.className = `seat seat-${index % 10}`;
-                
-                if (index === turnIdx) seat.classList.add('active-turn');
-                if (p.id === myId && index === turnIdx) seat.classList.add('is-me'); // ⭐ 自己高亮
-                if (p.status === 'folded') seat.classList.add('folded');
-                if (p.status === 'sitout') seat.style.opacity = '0.3';
-
-                let badges = '';
-                if (p.isDealer) badges += '📍庄家 ';
-                if (p.isSmallBlind) badges += 'SB ';
-                if (p.isBigBlind) badges += 'BB ';
-
-                let handHtml = '<div class="hand-cards">';
-                if (p.status !== 'sitout') {
-                    const showHand = (p.id === myId || gameState.stage === 'showdown');
-                    if (showHand && p.hand && p.hand.length > 0) {
-                        p.hand.forEach(c => handHtml += createCardEl(c).outerHTML);
-                    } else if (p.status === 'active') {
-                        handHtml += `<div class="card back"></div><div class="card back"></div>`;
-                    }
-                }
-                handHtml += '</div>';
-
-                seat.innerHTML = `
-                    <div class="name">${p.name}</div>
-                    <div class="badges">${badges}</div>
-                    <div class="chips">💵 $${p.chips}</div>
-                    ${handHtml}
+    // ⭐ 房主管理功能
+    function renderKickList() {
+        if (!isHost || !gameState) return;
+        
+        const kickList = document.getElementById('kick-list');
+        if (!kickList) return;
+        
+        kickList.innerHTML = '';
+        
+        gameState.players.forEach(p => {
+            if (p.id !== myId) {
+                const item = document.createElement('div');
+                item.className = 'kick-item';
+                item.innerHTML = `
+                    <span class="player-name">${p.name} ${p.isHost ? '👑' : ''}</span>
+                    <button class="kick-btn" onclick="kickPlayer('${p.id}', '${p.name}')">踢出</button>
                 `;
-                container.appendChild(seat);
-            });
-        }
-
-        // ⭐ 渲染行动指示箭头
-        function renderActionArrow(players, turnIdx) {
-            const arrow = document.getElementById('action-arrow');
-            if (turnIdx === undefined || turnIdx === null || !players[turnIdx]) {
-                arrow.style.display = 'none';
-                return;
+                kickList.appendChild(item);
             }
-            
-            arrow.style.display = 'block';
-            
-            // 根据座位位置调整箭头位置
-            const positions = {
-                0: { bottom: '20px', left: '50%', transform: 'translateX(-50%) rotate(180deg)' },
-                1: { bottom: '120px', left: '100px', transform: 'rotate(135deg)' },
-                2: { top: '100px', left: '120px', transform: 'rotate(90deg)' },
-                3: { top: '50px', left: '80px', transform: 'rotate(45deg)' },
-                4: { top: '30px', left: '50%', transform: 'translateX(-50%)' },
-                5: { top: '30px', right: '50%', transform: 'translateX(50%)' },
-                6: { top: '50px', right: '80px', transform: 'rotate(-45deg)' },
-                7: { top: '100px', right: '120px', transform: 'rotate(-90deg)' },
-                8: { bottom: '120px', right: '100px', transform: 'rotate(-135deg)' }
-            };
-            
-            const pos = positions[turnIdx % 9] || positions[0];
-            Object.assign(arrow.style, pos);
-        }
+        });
+    }
 
-        function createCardEl(c) {
-            const div = document.createElement('div');
-            div.className = `card ${colorMap[c.suit]}`;
-            div.innerText = `${c.value}${suitMap[c.suit]}`;
-            return div;
-        }
-    </script>
+    function kickPlayer(targetId, targetName) {
+        if (!confirm(`确定要踢出玩家 "${targetName}" 吗？`)) return;
+        
+        socket.emit('kick_player', {
+            targetId: targetId,
+            roomId: currentRoom
+        });
+    }
+
+    function createCardEl(c) {
+        const div = document.createElement('div');
+        div.className = `card ${colorMap[c.suit]}`;
+        div.innerText = `${c.value}${suitMap[c.suit]}`;
+        return div;
+    }
+</script>
 </body>
 </html>
