@@ -35,8 +35,7 @@ app.get('/health', (req, res) => {
 const CONFIG = {
     MAX_PLAYERS: 10,
     INITIAL_CHIPS: 10000,
-    SMALL_BLIND: 50,
-    BIG_BLIND: 100,
+    MIN_BET: 100,        // 最小下注额
     ACTION_TIMEOUT: 10000
 };
 
@@ -49,10 +48,9 @@ class PokerGame {
         this.deck = [];
         this.communityCards = [];
         this.pot = 0;
-        this.dealerIdx = 0;
         this.currentTurnIdx = 0;
         this.stage = 'waiting';
-        this.minBet = CONFIG.BIG_BLIND;
+        this.minBet = CONFIG.MIN_BET;
         this.timer = null;
         this.lastAggressorIdx = -1;
         this.bettingRound = 0;
@@ -74,10 +72,7 @@ class PokerGame {
             chips: CONFIG.INITIAL_CHIPS,
             hand: [],
             status: 'active',
-            currentBet: 0,
-            isDealer: false,
-            isSmallBlind: false,
-            isBigBlind: false,
+            currentBet = 0,
             lastActive: Date.now(),
             isHost: isHost
         });
@@ -118,6 +113,7 @@ class PokerGame {
         });
     }
 
+    // ⭐ 简化：去除盲注和庄家
     startRound() {
         this.cleanupDisconnectedPlayers();
         if (this.players.filter(p => p.chips > 0).length < 2) return;
@@ -125,20 +121,18 @@ class PokerGame {
         this.stage = 'preflop';
         this.communityCards = [];
         this.pot = 0;
-        this.minBet = CONFIG.BIG_BLIND;
+        this.minBet = CONFIG.MIN_BET;
         this.bettingRound = 0;
         this.lastAggressorIdx = -1;
         this.playersActed = [];
         this.createDeck();
         
+        // 重置所有玩家状态
         this.players.forEach(p => {
             if (p.chips > 0) {
                 p.hand = [];
                 p.status = 'active';
                 p.currentBet = 0;
-                p.isDealer = false;
-                p.isSmallBlind = false;
-                p.isBigBlind = false;
             } else {
                 p.status = 'sitout';
             }
@@ -147,38 +141,21 @@ class PokerGame {
         const activePlayers = this.players.filter(p => p.status !== 'sitout');
         if (activePlayers.length < 2) return;
 
-        this.dealerIdx = (this.dealerIdx + 1) % this.players.length;
-        let sbIdx = (this.dealerIdx + 1) % this.players.length;
-        let bbIdx = (this.dealerIdx + 2) % this.players.length;
-
-        this.postBlind(sbIdx, CONFIG.SMALL_BLIND, 'isSmallBlind');
-        this.postBlind(bbIdx, CONFIG.BIG_BLIND, 'isBigBlind');
-
+        // ⭐ 发底牌（每人 2 张）
         for (let i = 0; i < 2; i++) {
             this.players.forEach(p => {
                 if (p.status === 'active') p.hand.push(this.deck.pop());
             });
         }
 
-        this.currentTurnIdx = (bbIdx + 1) % this.players.length;
+        // ⭐ 从第一个活跃玩家开始
+        this.currentTurnIdx = 0;
+        while (this.players[this.currentTurnIdx].status !== 'active') {
+            this.currentTurnIdx = (this.currentTurnIdx + 1) % this.players.length;
+        }
+        
         this.broadcastState();
         this.nextTurn();
-    }
-
-    postBlind(playerIdx, amount, flag) {
-        const p = this.players[playerIdx];
-        if (!p) return;
-        if (p.chips >= amount) {
-            p.chips -= amount;
-            p.currentBet = amount;
-            this.pot += amount;
-            p[flag] = true;
-        } else {
-            this.pot += p.chips;
-            p.currentBet = p.chips;
-            p.chips = 0;
-            p[flag] = true;
-        }
     }
 
     handleAction(socketId, action) {
@@ -202,7 +179,7 @@ class PokerGame {
                 this.pot += pay;
             }
         } else if (action === 'raise') {
-            const raiseAmt = CONFIG.BIG_BLIND;
+            const raiseAmt = CONFIG.MIN_BET;
             if (player.chips >= raiseAmt) {
                 player.chips -= raiseAmt;
                 player.currentBet += raiseAmt;
@@ -222,16 +199,19 @@ class PokerGame {
     checkRoundEnd() {
         const activePlayers = this.players.filter(p => p.status === 'active');
         
+        // 只剩一人，直接获胜
         if (activePlayers.length === 1) {
             this.settleWinner(activePlayers);
             return;
         }
         
+        // 检查是否所有活跃玩家都已行动
         const allActed = activePlayers.every(p => {
             const idx = this.players.indexOf(p);
             return this.playersActed.includes(idx);
         });
         
+        // 检查是否所有玩家下注额一致
         const betsMatch = activePlayers.every(p => p.currentBet === this.minBet || p.chips === 0);
         
         if (allActed && betsMatch) {
@@ -241,18 +221,19 @@ class PokerGame {
         }
     }
 
+    // ⭐ 4 轮下注：翻牌前 → 翻牌 → 转牌 → 河牌
     nextStage() {
         console.log('=== Next Stage ===');
         
         this.players.forEach(p => p.currentBet = 0);
-        this.minBet = CONFIG.BIG_BLIND;
+        this.minBet = CONFIG.MIN_BET;
         this.playersActed = [];
         this.lastAggressorIdx = -1;
         this.bettingRound++;
 
         if (this.stage === 'preflop') {
             this.stage = 'flop';
-            this.deck.pop();
+            this.deck.pop(); // 烧牌
             this.communityCards.push(this.deck.pop(), this.deck.pop(), this.deck.pop());
         } else if (this.stage === 'flop') {
             this.stage = 'turn';
@@ -268,17 +249,14 @@ class PokerGame {
             return;
         }
 
-        this.findNextActivePlayer();
+        // 从第一个活跃玩家开始
+        this.currentTurnIdx = 0;
+        while (this.players[this.currentTurnIdx].status !== 'active') {
+            this.currentTurnIdx = (this.currentTurnIdx + 1) % this.players.length;
+        }
+        
         this.broadcastState();
         this.nextTurn();
-    }
-
-    findNextActivePlayer() {
-        let idx = (this.dealerIdx + 1) % this.players.length;
-        while (this.players[idx].status !== 'active') {
-            idx = (idx + 1) % this.players.length;
-        }
-        this.currentTurnIdx = idx;
     }
 
     nextTurn() {
@@ -387,7 +365,10 @@ class PokerGame {
         this.players.splice(targetIndex, 1);
         
         if (targetIndex === this.currentTurnIdx && this.stage !== 'showdown') {
-            this.findNextActivePlayer();
+            this.currentTurnIdx = 0;
+            while (this.players[this.currentTurnIdx]?.status !== 'active') {
+                this.currentTurnIdx = (this.currentTurnIdx + 1) % this.players.length;
+            }
         }
         
         if (this.players.length > 0 && !this.players.find(p => p.id === this.hostId)) {
@@ -404,16 +385,12 @@ class PokerGame {
             stage: this.stage,
             pot: this.pot,
             communityCards: this.communityCards,
-            dealerIdx: this.dealerIdx,
             currentTurnIdx: this.currentTurnIdx,
             players: this.players.map(p => ({
                 id: p.id,
                 name: p.name,
                 chips: p.chips,
                 status: p.status,
-                isDealer: p.isDealer,
-                isSmallBlind: p.isSmallBlind,
-                isBigBlind: p.isBigBlind,
                 isHost: p.isHost,
                 hand: p.hand
             }))

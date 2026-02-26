@@ -325,7 +325,7 @@
     <div id="login-modal">
         <div class="modal-content">
             <h2>🃏 德州扑克</h2>
-            <p style="color: #aaa; margin-bottom: 20px;">10 人在线对战</p>
+            <p style="color: #aaa; margin-bottom: 20px;">10 人在线对战 - 简化版</p>
             <input type="text" id="room-id" placeholder="房间号 (和朋友填一样)" value="friend888">
             <br>
             <input type="text" id="username" placeholder="你的昵称" value="Player">
@@ -371,10 +371,10 @@
         const colorMap = { 's': 'black', 'h': 'red', 'c': 'black', 'd': 'red' };
         const stageMap = {
             'waiting': '等待玩家',
-            'preflop': '发底牌',
-            'flop': '翻牌 (3 张)',
-            'turn': '转牌 (4 张)',
-            'river': '河牌 (5 张)',
+            'preflop': '第 1 轮 - 发底牌',
+            'flop': '第 2 轮 - 翻牌 (3 张)',
+            'turn': '第 3 轮 - 转牌 (4 张)',
+            'river': '第 4 轮 - 河牌 (5 张)',
             'showdown': '摊牌比牌'
         };
 
@@ -548,7 +548,7 @@
             document.getElementById('pot-amount').innerText = state.pot;
             document.getElementById('stage-display').innerText = stageMap[state.stage] || state.stage;
             renderCommunityCards(state.communityCards, prevStage !== state.stage);
-            renderSeats(state.players, state.currentTurnIdx, state.dealerIdx);
+            renderSeats(state.players, state.currentTurnIdx);
             renderActionArrow(state.players, state.currentTurnIdx);
         }
 
@@ -563,7 +563,7 @@
             if (animate && cards.length > 0) playSound('deal');
         }
 
-        function renderSeats(players, turnIdx, dealerIdx) {
+        function renderSeats(players, turnIdx) {
             const container = document.getElementById('seats-container');
             container.innerHTML = '';
             players.forEach((p, index) => {
@@ -575,9 +575,6 @@
                 if (p.status === 'sitout') seat.style.opacity = '0.3';
                 if (p.status === 'disconnected') seat.style.border = '3px dashed #666';
                 let badges = '';
-                if (p.isDealer) badges += '📍庄家 ';
-                if (p.isSmallBlind) badges += 'SB ';
-                if (p.isBigBlind) badges += 'BB ';
                 if (p.isHost) badges += '👑房主 ';
                 let handHtml = '<div class="hand-cards">';
                 if (p.status !== 'sitout') {
