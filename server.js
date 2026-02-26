@@ -35,7 +35,7 @@ app.get('/health', (req, res) => {
 const CONFIG = {
     MAX_PLAYERS: 10,
     INITIAL_CHIPS: 10000,
-    MIN_BET: 100,        // 最小下注额
+    MIN_BET: 100,
     ACTION_TIMEOUT: 10000
 };
 
@@ -72,7 +72,7 @@ class PokerGame {
             chips: CONFIG.INITIAL_CHIPS,
             hand: [],
             status: 'active',
-            currentBet = 0,
+            currentBet: 0,  // ✅ 用冒号
             lastActive: Date.now(),
             isHost: isHost
         });
@@ -113,7 +113,6 @@ class PokerGame {
         });
     }
 
-    // ⭐ 简化：去除盲注和庄家
     startRound() {
         this.cleanupDisconnectedPlayers();
         if (this.players.filter(p => p.chips > 0).length < 2) return;
@@ -127,7 +126,6 @@ class PokerGame {
         this.playersActed = [];
         this.createDeck();
         
-        // 重置所有玩家状态
         this.players.forEach(p => {
             if (p.chips > 0) {
                 p.hand = [];
@@ -141,14 +139,12 @@ class PokerGame {
         const activePlayers = this.players.filter(p => p.status !== 'sitout');
         if (activePlayers.length < 2) return;
 
-        // ⭐ 发底牌（每人 2 张）
         for (let i = 0; i < 2; i++) {
             this.players.forEach(p => {
                 if (p.status === 'active') p.hand.push(this.deck.pop());
             });
         }
 
-        // ⭐ 从第一个活跃玩家开始
         this.currentTurnIdx = 0;
         while (this.players[this.currentTurnIdx].status !== 'active') {
             this.currentTurnIdx = (this.currentTurnIdx + 1) % this.players.length;
@@ -199,19 +195,16 @@ class PokerGame {
     checkRoundEnd() {
         const activePlayers = this.players.filter(p => p.status === 'active');
         
-        // 只剩一人，直接获胜
         if (activePlayers.length === 1) {
             this.settleWinner(activePlayers);
             return;
         }
         
-        // 检查是否所有活跃玩家都已行动
         const allActed = activePlayers.every(p => {
             const idx = this.players.indexOf(p);
             return this.playersActed.includes(idx);
         });
         
-        // 检查是否所有玩家下注额一致
         const betsMatch = activePlayers.every(p => p.currentBet === this.minBet || p.chips === 0);
         
         if (allActed && betsMatch) {
@@ -221,7 +214,6 @@ class PokerGame {
         }
     }
 
-    // ⭐ 4 轮下注：翻牌前 → 翻牌 → 转牌 → 河牌
     nextStage() {
         console.log('=== Next Stage ===');
         
@@ -233,7 +225,7 @@ class PokerGame {
 
         if (this.stage === 'preflop') {
             this.stage = 'flop';
-            this.deck.pop(); // 烧牌
+            this.deck.pop();
             this.communityCards.push(this.deck.pop(), this.deck.pop(), this.deck.pop());
         } else if (this.stage === 'flop') {
             this.stage = 'turn';
@@ -249,7 +241,6 @@ class PokerGame {
             return;
         }
 
-        // 从第一个活跃玩家开始
         this.currentTurnIdx = 0;
         while (this.players[this.currentTurnIdx].status !== 'active') {
             this.currentTurnIdx = (this.currentTurnIdx + 1) % this.players.length;
