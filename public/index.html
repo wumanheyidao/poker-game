@@ -14,6 +14,99 @@
             overflow: hidden;
             min-height: 100vh;
         }
+
+
+        /* 房主控制面板 */
+.host-controls {
+    position: absolute;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 150;
+}
+
+.host-panel {
+    background: rgba(0, 0, 0, 0.8);
+    border: 2px solid #f1c40f;
+    border-radius: 10px;
+    padding: 15px;
+    min-width: 300px;
+}
+
+.host-panel h3 {
+    color: #f1c40f;
+    margin: 0 0 10px 0;
+    font-size: 16px;
+    text-align: center;
+}
+
+.kick-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px;
+    margin: 5px 0;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 5px;
+}
+
+.kick-item .player-name {
+    color: white;
+    font-size: 14px;
+}
+
+.kick-item .kick-btn {
+    background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+    color: white;
+    border: none;
+    padding: 5px 15px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.kick-item .kick-btn:hover {
+    transform: scale(1.05);
+}
+
+.kick-item .kick-btn:disabled {
+    background: #555;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* 被踢提示 */
+.kicked-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.9);
+    display: none;
+    justify-content: center;
+    align-items: center;
+    z-index: 2000;
+}
+
+.kicked-content {
+    background: linear-gradient(135deg, #c0392b 0%, #922b21 100%);
+    padding: 40px;
+    border-radius: 15px;
+    text-align: center;
+    color: white;
+    max-width: 400px;
+}
+
+.kicked-content h2 {
+    font-size: 32px;
+    margin-bottom: 20px;
+}
+
+.kicked-content p {
+    font-size: 18px;
+    margin-bottom: 30px;
+}
         
         /* 游戏桌 */
         .poker-table {
@@ -347,6 +440,13 @@
     </style>
 </head>
 <body>
+    <!-- 房主控制面板 -->
+<div class="host-controls" id="host-controls" style="display: none;">
+    <div class="host-panel">
+        <h3>👑 房主管理</h3>
+        <div id="kick-list"></div>
+    </div>
+</div>
     <!-- 音效控制 -->
     <div class="sound-control">
         <button class="sound-btn" id="sound-toggle" onclick="toggleSound()">🔊 音效开</button>
@@ -389,6 +489,109 @@
     </div>
 
     <script>
+
+        let isHost = false;
+
+// ⭐ 接收被踢通知
+socket.on('kicked', (data) => {
+    document.getElementById('login-modal').style.display = 'none';
+    const kickedModal = document.createElement('div');
+    kickedModal.className = 'kicked-modal';
+    kickedModal.style.display = 'flex';
+    kickedModal.innerHTML = `
+        <div class="kicked-content">
+            <h2>🚫 你被踢出房间</h2>
+            <p>${data.kicker ? `房主 ${data.kicker} 将你踢出` : '你被房主踢出房间'}</p>
+            <p style="color: #aaa; font-size: 14px;">${data.reason || ''}</p>
+            <button onclick="location.reload()" style="padding: 10px 30px; font-size: 16px; background: #27ae60; color: white; border: none; border-radius: 8px; cursor: pointer;">返回大厅</button>
+        </div>
+    `;
+    document.body.appendChild(kickedModal);
+    socket.disconnect();
+});
+
+// ⭐ 接收踢人结果
+socket.on('kick_result', (result) => {
+    showMessage(result.success ? '✅ ' + result.message : '❌ ' + result.message);
+    if (result.success) {
+        renderKickList(); // 刷新踢人列表
+    }
+});
+
+// ⭐ 渲染踢人列表
+function renderKickList() {
+    if (!isHost || !gameState) return;
+    
+    const kickList = document.getElementById('kick-list');
+    kickList.innerHTML = '';
+    
+    gameState.players.forEach(p => {
+        if (p.id !== myId) { // 不能踢自己
+            const item = document.createElement('div');
+            item.className = 'kick-item';
+            item.innerHTML = `
+                <span class="player-name">${p.name} ${p.isHost ? '👑' : ''}</span>
+                <button class="kick-btn" onclick="kickPlayer('${p.id}', '${p.name}')">踢出</button>
+            `;
+            kickList.appendChild(item);
+        }
+    });
+}
+
+// ⭐ 踢人函数
+function kickPlayer(targetId, targetName) {
+    if (!confirm(`确定要踢出玩家 "${targetName}" 吗？`)) return;
+    
+    socket.emit('kick_player', {
+        targetId: targetId,
+        roomId: currentRoom
+    });
+}
+
+// ⭐ 修改 bindSocketEvents，检测房主身份
+function bindSocketEvents(socket) {
+    socket.on('connect', () => {
+        myId = socket.id;
+        console.log('已连接到服务器，ID:', myId);
+    });
+
+    socket.on('game_state', (state) => {
+        const prevStage = gameState ? gameState.stage : null;
+        gameState = state;
+        renderTable(state, prevStage);
+        
+        // ⭐ 检测房主身份
+        const myPlayer = state.players.find(p => p.id === myId);
+        if (myPlayer && myPlayer.isHost && !isHost) {
+            isHost = true;
+            document.getElementById('host-controls').style.display = 'block';
+            renderKickList();
+            showMessage('👑 你是房主！');
+        }
+    });
+
+    socket.on('your_turn', () => {
+        enableControls(true);
+        showMessage('🎯 轮到你了！');
+        playSound('turn');
+    });
+
+    socket.on('game_result', (data) => {
+        showMessage('🏆 ' + data.msg + (data.handName ? ` (${data.handName})` : ''));
+        playSound('win');
+        enableControls(false);
+    });
+    
+    window.gameSocket = socket;
+}
+
+// ⭐ 玩家离开时刷新踢人列表
+socket.on('player_left', () => {
+    if (isHost) {
+        renderKickList();
+    }
+});
+
         let socket = null;
         let myId = null;
         let gameState = null;
