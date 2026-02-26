@@ -6,9 +6,14 @@ const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
+});
 
-// 静态文件目录
+// 静态文件目�?
 app.use(express.static(path.join(__dirname, 'public')));
 
 // 游戏配置
@@ -20,7 +25,7 @@ const CONFIG = {
     ACTION_TIMEOUT: 10000
 };
 
-// 游戏房间类
+// 游戏房间�?
 class PokerGame {
     constructor(roomId) {
         this.roomId = roomId;
@@ -30,9 +35,14 @@ class PokerGame {
         this.pot = 0;
         this.dealerIdx = 0;
         this.currentTurnIdx = 0;
-        this.stage = 'waiting'; // waiting, preflop, flop, turn, river, showdown
+        this.stage = 'waiting';
         this.minBet = CONFIG.BIG_BLIND;
         this.timer = null;
+        
+        // 下注轮次跟踪
+        this.lastAggressorIdx = -1;
+        this.bettingRound = 0;
+        this.playersActed = [];
     }
 
     // 加入玩家
@@ -47,7 +57,8 @@ class PokerGame {
             currentBet: 0,
             isDealer: false,
             isSmallBlind: false,
-            isBigBlind: false
+            isBigBlind: false,
+            lastActive: Date.now()
         });
         this.broadcastState();
         if (this.players.length >= 2 && this.stage === 'waiting') {
@@ -56,7 +67,7 @@ class PokerGame {
         return true;
     }
 
-    // 创建并洗牌
+    // 创建并洗�?
     createDeck() {
         const suits = ['s', 'h', 'c', 'd'];
         const values = ['2', '3', '4', '5', '6', '7', '8', '9', 'T', 'J', 'Q', 'K', 'A'];
@@ -72,19 +83,44 @@ class PokerGame {
         }
     }
 
+    // 清理离线玩家
+    cleanupDisconnectedPlayers() {
+        const now = Date.now();
+        const TIMEOUT = 5 * 60 * 1000; // 5 分钟
+        
+        this.players = this.players.filter(p => {
+            if (p.status === 'disconnected') {
+                if (now - p.lastActive > TIMEOUT) {
+                    console.log(`🗑�?Player ${p.name} removed (timeout)`);
+                    return false;
+                }
+                return true;
+            }
+            return true;
+        });
+    }
+
     // 开始新的一局
     startRound() {
+        // 清理离线玩家
+        this.cleanupDisconnectedPlayers();
+        
         if (this.players.filter(p => p.chips > 0).length < 2) return;
+        
         this.stage = 'preflop';
         this.communityCards = [];
         this.pot = 0;
+        this.minBet = CONFIG.BIG_BLIND;
+        this.bettingRound = 0;
+        this.lastAggressorIdx = -1;
+        this.playersActed = [];
         this.createDeck();
         
         this.players.forEach(p => {
             if (p.chips > 0) {
                 p.hand = [];
                 p.status = 'active';
-                p.currentBet = 0;
+                p.currentBet: 0;
                 p.isDealer = false;
                 p.isSmallBlind = false;
                 p.isBigBlind = false;
@@ -114,9 +150,11 @@ class PokerGame {
         this.nextTurn();
     }
 
-    // 下盲注
+    // 下盲�?
     postBlind(playerIdx, amount, flag) {
         const p = this.players[playerIdx];
+        if (!p) return;
+        
         if (p.chips >= amount) {
             p.chips -= amount;
             p.currentBet = amount;
@@ -133,12 +171,17 @@ class PokerGame {
     // 处理玩家动作
     handleAction(socketId, action) {
         const player = this.players.find(p => p.id === socketId);
-        if (!player || player.id !== this.players[this.currentTurnIdx].id || player.status !== 'active') return;
+        if (!player || player.id !== this.players[this.currentTurnIdx]?.id || player.status !== 'active') {
+            console.log('�?Invalid action:', socketId, 'current:', this.players[this.currentTurnIdx]?.id);
+            return;
+        }
 
         clearTimeout(this.timer);
+        console.log(`🎮 Player ${player.name} action: ${action}`);
 
         if (action === 'fold') {
             player.status = 'folded';
+            player.currentBet: 0;
         } else if (action === 'check' || action === 'call') {
             const toCall = this.minBet - player.currentBet;
             if (toCall > 0) {
@@ -148,32 +191,64 @@ class PokerGame {
                 this.pot += pay;
             }
         } else if (action === 'raise') {
-            const raiseAmt = this.minBet;
+            const raiseAmt = CONFIG.BIG_BLIND;
             if (player.chips >= raiseAmt) {
                 player.chips -= raiseAmt;
                 player.currentBet += raiseAmt;
                 this.pot += raiseAmt;
-                this.minBet += raiseAmt;
+                this.minBet = player.currentBet;
+                this.lastAggressorIdx = this.currentTurnIdx;
             }
         }
 
+        // 标记该玩家已行动
+        if (!this.playersActed.includes(this.currentTurnIdx)) {
+            this.playersActed.push(this.currentTurnIdx);
+        }
+
+        console.log('📋 Players acted:', this.playersActed, 'Last aggressor:', this.lastAggressorIdx);
+        
         this.checkRoundEnd();
     }
 
-    // 检查本轮是否结束
+    // 检查本轮是否结�?
     checkRoundEnd() {
         const activePlayers = this.players.filter(p => p.status === 'active');
+        
+        // 只剩一人，直接获胜
         if (activePlayers.length === 1) {
             this.settleWinner(activePlayers);
             return;
         }
-        this.nextStage();
+        
+        // 检查是否所有活跃玩家都已行�?
+        const allActed = activePlayers.every(p => {
+            const idx = this.players.indexOf(p);
+            return this.playersActed.includes(idx);
+        });
+        
+        // 检查是否所有玩家下注额一�?
+        const betsMatch = activePlayers.every(p => p.currentBet === this.minBet || p.chips === 0);
+        
+        console.log(`�?All acted: ${allActed}, Bets match: ${betsMatch}`);
+        
+        // 只有所有人都行动过且下注一致，才能进入下一阶段
+        if (allActed && betsMatch) {
+            this.nextStage();
+        } else {
+            this.nextTurn();
+        }
     }
 
     // 进入下一阶段
     nextStage() {
-        this.players.forEach(p => p.currentBet = 0);
+        console.log('=== 🔄 Next Stage ===');
+        
+        this.players.forEach(p => p.currentBet: 0);
         this.minBet = CONFIG.BIG_BLIND;
+        this.playersActed = [];
+        this.lastAggressorIdx = -1;
+        this.bettingRound++;
 
         if (this.stage === 'preflop') {
             this.stage = 'flop';
@@ -193,12 +268,14 @@ class PokerGame {
             return;
         }
 
+        console.log(`📍 Stage: ${this.stage}, Community cards: ${this.communityCards.length}`);
+        
         this.findNextActivePlayer();
         this.broadcastState();
         this.nextTurn();
     }
 
-    // 找下一个活跃玩家
+    // 找下一个活跃玩�?
     findNextActivePlayer() {
         let idx = (this.dealerIdx + 1) % this.players.length;
         while (this.players[idx].status !== 'active') {
@@ -207,12 +284,33 @@ class PokerGame {
         this.currentTurnIdx = idx;
     }
 
-    // 轮到下一个玩家
+    // 轮到下一个玩�?
     nextTurn() {
         if (this.stage === 'showdown') return;
+        
+        let nextIdx = (this.currentTurnIdx + 1) % this.players.length;
+        let loops = 0;
+        
+        while (this.players[nextIdx].status !== 'active' && loops < this.players.length) {
+            nextIdx = (nextIdx + 1) % this.players.length;
+            loops++;
+        }
+        
+        if (loops >= this.players.length) {
+            console.log('⚠️ No active players found!');
+            return;
+        }
+        
+        this.currentTurnIdx = nextIdx;
         const currentPlayer = this.players[this.currentTurnIdx];
+        
+        console.log(`👉 Next turn: ${currentPlayer.name} (idx: ${this.currentTurnIdx})`);
+        
         io.to(currentPlayer.id).emit('your_turn');
+        this.broadcastState();
+        
         this.timer = setTimeout(() => {
+            console.log(`�?Timeout for ${currentPlayer.name}, auto-check`);
             this.handleAction(currentPlayer.id, 'check');
         }, CONFIG.ACTION_TIMEOUT);
     }
@@ -259,7 +357,7 @@ class PokerGame {
         }, 5000);
     }
 
-    // 其他人弃牌直接获胜
+    // 其他人弃牌直接获�?
     settleWinner(winners) {
         winners.forEach(w => {
             w.chips += this.pot;
@@ -269,7 +367,7 @@ class PokerGame {
         setTimeout(() => this.startRound(), 5000);
     }
 
-    // 广播游戏状态
+    // 广播游戏状�?
     broadcastState() {
         const state = {
             stage: this.stage,
@@ -295,7 +393,7 @@ class PokerGame {
 const rooms = {};
 
 io.on('connection', (socket) => {
-    console.log('User connected:', socket.id);
+    console.log('🔌 User connected:', socket.id);
     const roomId = socket.handshake.query.roomId || 'room1';
     socket.join(roomId);
 
@@ -314,15 +412,59 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
+        console.log('🔌 User disconnected:', socket.id);
+        
         if (rooms[roomId]) {
-            const p = rooms[roomId].players.find(pl => pl.id === socket.id);
-            if (p) p.status = 'folded';
-            rooms[roomId].broadcastState();
+            const game = rooms[roomId];
+            const playerIndex = game.players.findIndex(pl => pl.id === socket.id);
+            
+            if (playerIndex !== -1) {
+                const player = game.players[playerIndex];
+                console.log(`👤 Player ${player.name} disconnected, chips: ${player.chips}`);
+                
+                player.status = 'disconnected';
+                player.lastActive = Date.now();
+                
+                // 如果断线的是当前行动玩家，自动弃�?
+                if (playerIndex === game.currentTurnIdx && game.stage !== 'showdown') {
+                    console.log('⚠️ Current player disconnected, auto-fold');
+                    clearTimeout(game.timer);
+                    player.status = 'folded';
+                    game.checkRoundEnd();
+                }
+                
+                game.broadcastState();
+                
+                const activePlayers = game.players.filter(p => 
+                    p.status === 'active' || (p.status === 'disconnected' && p.chips > 0)
+                );
+                
+                if (activePlayers.length === 0) {
+                    game.stage = 'waiting';
+                    game.broadcastState();
+                }
+            }
+        }
+    });
+
+    socket.on('reconnect', () => {
+        console.log('🔌 User reconnected:', socket.id);
+        if (rooms[roomId]) {
+            const player = rooms[roomId].players.find(p => p.id === socket.id);
+            if (player && player.status === 'disconnected') {
+                player.status = 'active';
+                console.log(`�?Player ${player.name} reconnected`);
+                rooms[roomId].broadcastState();
+            }
         }
     });
 });
 
-server.listen(3000, () => {
-    console.log('🎰 服务器运行在 http://localhost:3000');
-    console.log('📡 按 Ctrl+C 停止服务器');
+// 使用环境变量端口（支�?Render 部署�?
+const PORT = process.env.PORT || 3000;
+
+server.listen(PORT, () => {
+    console.log('🎰 服务器运行在 http://localhost:' + PORT);
+    console.log('📡 �?Ctrl+C 停止服务�?);
+    console.log('🌐 本地访问：http://localhost:' + PORT);
 });

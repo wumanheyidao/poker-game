@@ -89,16 +89,49 @@
             cursor: default;
         }
         
+        /* ⭐ 普通激活状态 */
         .seat.active-turn { 
             border-color: #f1c40f; 
             box-shadow: 0 0 20px #f1c40f;
             transform: scale(1.05);
+            animation: pulse-gold 1.5s infinite;
+        }
+        
+        /* ⭐ 当前玩家（自己）的高亮 */
+        .seat.active-turn.is-me {
+            border-color: #00ff00;
+            box-shadow: 0 0 30px #00ff00, 0 0 60px #00ff00;
+            animation: pulse-green 1s infinite;
+            z-index: 10;
         }
         
         .seat.folded { opacity: 0.4; }
         .seat .chips { color: #f1c40f; font-weight: bold; font-size: 14px; }
         .seat .name { margin-bottom: 5px; font-weight: bold; }
         .seat .badges { font-size: 10px; color: #aaa; }
+
+        /* ⭐ 高亮动画 */
+        @keyframes pulse-gold {
+            0%, 100% { 
+                box-shadow: 0 0 20px #f1c40f;
+                transform: translateX(-50%) scale(1.05);
+            }
+            50% { 
+                box-shadow: 0 0 40px #f1c40f, 0 0 60px #f1c40f;
+                transform: translateX(-50%) scale(1.08);
+            }
+        }
+        
+        @keyframes pulse-green {
+            0%, 100% { 
+                box-shadow: 0 0 30px #00ff00, 0 0 60px #00ff00;
+                transform: translateX(-50%) scale(1.05);
+            }
+            50% { 
+                box-shadow: 0 0 50px #00ff00, 0 0 80px #00ff00;
+                transform: translateX(-50%) scale(1.1);
+            }
+        }
 
         /* 10 人座位位置 (椭圆形分布) */
         .seat-0 { bottom: -70px; left: 50%; transform: translateX(-50%); }
@@ -125,7 +158,14 @@
             font-weight: bold;
             box-shadow: 2px 2px 8px rgba(0,0,0,0.4);
             user-select: none;
+            animation: card-deal 0.5s ease-out;
         }
+        
+        @keyframes card-deal {
+            0% { transform: translateY(-50px) scale(0.5); opacity: 0; }
+            100% { transform: translateY(0) scale(1); opacity: 1; }
+        }
+        
         .card.red { color: #e74c3c; }
         .card.black { color: #2c3e50; }
         .card.back {
@@ -174,6 +214,16 @@
         button.fold { background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%); }
         button.check { background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%); }
         button.raise { background: linear-gradient(135deg, #e67e22 0%, #d35400 100%); }
+        
+        /* ⭐ 按钮激活状态 */
+        button.active-action {
+            animation: button-pulse 1s infinite;
+        }
+        
+        @keyframes button-pulse {
+            0%, 100% { box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+            50% { box-shadow: 0 6px 15px rgba(255,255,255,0.5); }
+        }
 
         /* 登录遮罩 */
         #login-modal {
@@ -254,9 +304,54 @@
             color: #aaa;
             font-size: 14px;
         }
+        
+        /* ⭐ 行动提示箭头 */
+        .action-arrow {
+            position: absolute;
+            width: 0;
+            height: 0;
+            border-left: 15px solid transparent;
+            border-right: 15px solid transparent;
+            border-bottom: 25px solid #f1c40f;
+            animation: arrow-bounce 0.8s infinite;
+            z-index: 50;
+        }
+        
+        @keyframes arrow-bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+        
+        /* ⭐ 音效控制按钮 */
+        .sound-control {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 200;
+        }
+        
+        .sound-btn {
+            background: rgba(0,0,0,0.5);
+            border: 2px solid #f1c40f;
+            color: #f1c40f;
+            padding: 8px 15px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        .sound-btn.muted {
+            border-color: #666;
+            color: #666;
+        }
     </style>
 </head>
 <body>
+    <!-- 音效控制 -->
+    <div class="sound-control">
+        <button class="sound-btn" id="sound-toggle" onclick="toggleSound()">🔊 音效开</button>
+    </div>
+
     <!-- 登录界面 -->
     <div id="login-modal">
         <div class="modal-content">
@@ -282,6 +377,8 @@
         <div class="pot-info">💰 底池：$<span id="pot-amount">0</span></div>
         <div class="community-area" id="community-cards"></div>
         <div id="seats-container"></div>
+        <!-- 行动指示箭头 -->
+        <div id="action-arrow" class="action-arrow" style="display: none;"></div>
     </div>
 
     <!-- 操作按钮 -->
@@ -296,6 +393,8 @@
         let myId = null;
         let gameState = null;
         let currentRoom = '';
+        let soundEnabled = true;
+        let audioContext = null;
 
         const suitMap = { 's': '♠', 'h': '♥', 'c': '♣', 'd': '♦' };
         const colorMap = { 's': 'black', 'h': 'red', 'c': 'black', 'd': 'red' };
@@ -308,17 +407,98 @@
             'showdown': '摊牌比牌'
         };
 
+        // ⭐ 音效系统
+        function initAudio() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+        }
+
+        function playSound(type) {
+            if (!soundEnabled || !audioContext) return;
+            
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            switch(type) {
+                case 'deal': // 发牌音效
+                    oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+                    oscillator.frequency.exponentialRampToValueAtTime(400, audioContext.currentTime + 0.1);
+                    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
+                    oscillator.start(audioContext.currentTime);
+                    oscillator.stop(audioContext.currentTime + 0.1);
+                    break;
+                    
+                case 'chip': // 筹码音效
+                    oscillator.frequency.setValueAtTime(1200, audioContext.currentTime);
+                    oscillator.frequency.exponentialRampToValueAtTime(600, audioContext.currentTime + 0.08);
+                    gainNode.gain.setValueAtTime(0.2, audioContext.currentTime);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.08);
+                    oscillator.start(audioContext.currentTime);
+                    oscillator.stop(audioContext.currentTime + 0.08);
+                    break;
+                    
+                case 'win': // 获胜音效
+                    oscillator.frequency.setValueAtTime(523, audioContext.currentTime);
+                    oscillator.frequency.setValueAtTime(659, audioContext.currentTime + 0.1);
+                    oscillator.frequency.setValueAtTime(784, audioContext.currentTime + 0.2);
+                    oscillator.frequency.setValueAtTime(1047, audioContext.currentTime + 0.3);
+                    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+                    oscillator.start(audioContext.currentTime);
+                    oscillator.stop(audioContext.currentTime + 0.5);
+                    break;
+                    
+                case 'turn': // 轮到你
+                    oscillator.frequency.setValueAtTime(880, audioContext.currentTime);
+                    oscillator.frequency.exponentialRampToValueAtTime(440, audioContext.currentTime + 0.15);
+                    gainNode.gain.setValueAtTime(0.25, audioContext.currentTime);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.15);
+                    oscillator.start(audioContext.currentTime);
+                    oscillator.stop(audioContext.currentTime + 0.15);
+                    break;
+                    
+                case 'fold': // 弃牌音效
+                    oscillator.frequency.setValueAtTime(300, audioContext.currentTime);
+                    oscillator.frequency.exponentialRampToValueAtTime(150, audioContext.currentTime + 0.2);
+                    gainNode.gain.setValueAtTime(0.2, audioContext.currentTime);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+                    oscillator.start(audioContext.currentTime);
+                    oscillator.stop(audioContext.currentTime + 0.2);
+                    break;
+            }
+        }
+
+        function toggleSound() {
+            soundEnabled = !soundEnabled;
+            const btn = document.getElementById('sound-toggle');
+            if (soundEnabled) {
+                btn.innerText = '🔊 音效开';
+                btn.classList.remove('muted');
+                initAudio();
+            } else {
+                btn.innerText = '🔇 音效关';
+                btn.classList.add('muted');
+            }
+        }
+
         function joinGame() {
             const name = document.getElementById('username').value.trim();
             const roomId = document.getElementById('room-id').value.trim() || 'room1';
             
             if (!name) return alert('请输入昵称！');
             
+            // ⭐ 初始化音频
+            initAudio();
+            
             currentRoom = roomId;
             document.getElementById('room-display').innerText = roomId;
             document.getElementById('login-modal').style.display = 'none';
             
-            // 连接服务器
             socket = io(window.location.origin, {
                 query: { roomId: roomId }
             });
@@ -334,17 +514,20 @@
             });
 
             socket.on('game_state', (state) => {
+                const prevStage = gameState ? gameState.stage : null;
                 gameState = state;
-                renderTable(state);
+                renderTable(state, prevStage);
             });
 
             socket.on('your_turn', () => {
                 enableControls(true);
                 showMessage('🎯 轮到你了！');
+                playSound('turn'); // ⭐ 播放提示音
             });
 
             socket.on('game_result', (data) => {
                 showMessage('🏆 ' + data.msg + (data.handName ? ` (${data.handName})` : ''));
+                playSound('win'); // ⭐ 播放获胜音
                 enableControls(false);
             });
             
@@ -355,13 +538,27 @@
             if(window.gameSocket) {
                 window.gameSocket.emit('action', action);
                 enableControls(false);
+                
+                // ⭐ 播放操作音效
+                if (action === 'fold') playSound('fold');
+                else playSound('chip');
             }
         }
 
         function enableControls(enable) {
-            document.getElementById('btn-fold').disabled = !enable;
-            document.getElementById('btn-check').disabled = !enable;
-            document.getElementById('btn-raise').disabled = !enable;
+            const btnFold = document.getElementById('btn-fold');
+            const btnCheck = document.getElementById('btn-check');
+            const btnRaise = document.getElementById('btn-raise');
+            
+            btnFold.disabled = !enable;
+            btnCheck.disabled = !enable;
+            btnRaise.disabled = !enable;
+            
+            // ⭐ 按钮高亮
+            if (enable) {
+                btnCheck.classList.add('active-action');
+                setTimeout(() => btnCheck.classList.remove('active-action'), 2000);
+            }
         }
 
         function showMessage(msg) {
@@ -370,19 +567,28 @@
             setTimeout(() => el.innerText = '', 4000);
         }
 
-        function renderTable(state) {
+        function renderTable(state, prevStage) {
             document.getElementById('pot-amount').innerText = state.pot;
             document.getElementById('stage-display').innerText = stageMap[state.stage] || state.stage;
-            renderCommunityCards(state.communityCards);
+            renderCommunityCards(state.communityCards, prevStage !== state.stage);
             renderSeats(state.players, state.currentTurnIdx, state.dealerIdx);
+            renderActionArrow(state.players, state.currentTurnIdx);
         }
 
-        function renderCommunityCards(cards) {
+        function renderCommunityCards(cards, animate) {
             const container = document.getElementById('community-cards');
             container.innerHTML = '';
-            cards.forEach(c => {
-                container.appendChild(createCardEl(c));
+            cards.forEach((c, index) => {
+                const cardEl = createCardEl(c);
+                if (animate) {
+                    cardEl.style.animationDelay = `${index * 0.1}s`;
+                }
+                container.appendChild(cardEl);
             });
+            
+            if (animate && cards.length > 0) {
+                playSound('deal'); // ⭐ 发公共牌音效
+            }
         }
 
         function renderSeats(players, turnIdx, dealerIdx) {
@@ -394,6 +600,7 @@
                 seat.className = `seat seat-${index % 10}`;
                 
                 if (index === turnIdx) seat.classList.add('active-turn');
+                if (p.id === myId && index === turnIdx) seat.classList.add('is-me'); // ⭐ 自己高亮
                 if (p.status === 'folded') seat.classList.add('folded');
                 if (p.status === 'sitout') seat.style.opacity = '0.3';
 
@@ -421,6 +628,33 @@
                 `;
                 container.appendChild(seat);
             });
+        }
+
+        // ⭐ 渲染行动指示箭头
+        function renderActionArrow(players, turnIdx) {
+            const arrow = document.getElementById('action-arrow');
+            if (turnIdx === undefined || turnIdx === null || !players[turnIdx]) {
+                arrow.style.display = 'none';
+                return;
+            }
+            
+            arrow.style.display = 'block';
+            
+            // 根据座位位置调整箭头位置
+            const positions = {
+                0: { bottom: '20px', left: '50%', transform: 'translateX(-50%) rotate(180deg)' },
+                1: { bottom: '120px', left: '100px', transform: 'rotate(135deg)' },
+                2: { top: '100px', left: '120px', transform: 'rotate(90deg)' },
+                3: { top: '50px', left: '80px', transform: 'rotate(45deg)' },
+                4: { top: '30px', left: '50%', transform: 'translateX(-50%)' },
+                5: { top: '30px', right: '50%', transform: 'translateX(50%)' },
+                6: { top: '50px', right: '80px', transform: 'rotate(-45deg)' },
+                7: { top: '100px', right: '120px', transform: 'rotate(-90deg)' },
+                8: { bottom: '120px', right: '100px', transform: 'rotate(-135deg)' }
+            };
+            
+            const pos = positions[turnIdx % 9] || positions[0];
+            Object.assign(arrow.style, pos);
         }
 
         function createCardEl(c) {
